@@ -1,201 +1,122 @@
-# SkyWeather: 基于三通道 Sky Mask + ConvNeXt Cross-Attention 的天气图像分类
+```markdown
+# 🌤️ Weather-Classification: ConvNeXt-Tiny + 三通道 Sky Mask 深层空间 Cross-Attention
 
-## 项目简介
+> 基于现代 Vision Backbone 与语义掩码深度融合的高精度天气分类系统。通过引入三通道天空分割掩码作为空间先验，结合 Spatial Cross-Attention 机制，显著提升了对复杂天气（如雨雾、多云、雪天）的细粒度识别能力。
 
-### 比赛任务
+## ✨ 核心特性
 
-给定一张室外场景图片，判断图片所展示的天气状况，输出四个类别之一：`sunny`（晴天）、`cloudy`（多云）、`rainy`（雨天）、`snowy`（雪天）。
+- **🏗️ 双分支深层融合架构**
+  - **RGB 分支**: 采用 `ConvNeXt-Tiny` (ImageNet 预训练) 提取全局纹理与颜色特征。
+  - **Mask 分支**: 自定义 `MaskEncoder` 将三通道语义掩码编码至与 RGB 相同的深层特征空间 `[B, 768, 7, 7]`。
+  - **融合机制**: 实现 `SpatialCrossAttention`，以 RGB 特征为 Query，Mask 特征为 Key/Value，在深层空间进行像素级语义对齐与增强。
+- **🎭 三通道语义掩码设计**
+  摒弃传统单通道二值掩码，采用三通道解耦设计，提供更丰富的空间先验：
+  - `Channel 0`: Clouds + Fog (云/雾区域, 像素值 200)
+  - `Channel 1`: Sky-Other (其他天空区域, 像素值 255)
+  - `Channel 2`: Ground / Others (地面/背景, 像素值 128)
+- **🎯 针对性训练策略**
+  - **复合损失函数**: `Focal Loss` (解决类别不平衡) + `Center Loss` (增强类内紧凑度)。
+  - **自适应优化**: AdamW + ReduceLROnPlateau + Early Stopping，支持分层学习率与混合精度训练 (AMP)。
+  - **鲁棒数据增强**: 针对天气物理特性定制 ColorJitter、GaussNoise、Rotate 等增强管线，严格分离 Train/Val Transform。
+- **⚙️ 工程化部署就绪**
+  - 完整支持 CUDA / DirectML / CPU 多后端自动适配。
+  - 内置训练后自动推理流程 (`run_inference_after_training`)。
+  - 结构化日志与指标可视化 (Loss/Acc 曲线自动保存)。
 
-### 方案概述
+## 📁 项目结构
 
-本项目为**天气图像四分类比赛**参赛方案，对输入图片预测天气类别：`sunny`（晴天）、`cloudy`（多云）、`rainy`（雨天）、`snowy`（雪天）。
-
-核心思路：使用 SegFormer 语义分割提取精细的**三通道天空掩膜**，通过 ConvNeXt-Tiny 深层特征与 Mask 特征做空间 Cross-Attention 融合，最终分类。
-
-**最终跑分稳定在 90% 左右。**
-
----
-
-## 比赛经历
-
-- **第一天**：查看训练图片集，发现部分图片底部会有媒体平台的标签信息，为防止模型把这个标签当作特征，把所有图片底部都截了。比赛系统特别卡，GPU 资源根本排不上，无法进行模型训练。
-- **第二天**：系统更卡了，卡到连文件都上传不了、终端命令行也输不了，训练好的模型无法检验效果。下午赛事支持方升级了服务器，我们的工作才步入正轨，根据说明文档的接口编写推理程序，但服务器环境问题导致无法正常跑分。
-- **第三天**：将 Python 环境安装打包后一起上传到服务器，在程序中引用本地环境，得以正常跑分，最终跑分稳定在 **90% 左右**。
-
----
-
-## 目录结构与脚本说明
-
-```
-SkyWeather_upload/
-├── 1截底.py                    # 训练 Step 1：图片底部裁剪预处理（去除水印/信息条）
-├── 2sky云分割.py                # 训练 Step 2：SegFormer 三通道天空语义分割
-├── 3ConvNeXtCrossMask2.py       # 训练 Step 3：ConvNeXt + Cross-Attention 模型训练
-├── main.py                      # 推理算法模块：加载模型 + 在线分割 + 天气预测
-├── predict.py                   # 模拟比赛系统：批量调用 main.predict 评估
-├── main.ipynb                   # Jupyter Notebook 实验记录
-├── 图标.jpg                     # 天气图标素材
-├── requirements.txt             # Python 依赖列表
-└── README.md                    # 本文件
-```
-
-| 脚本 | 类型 | 说明 |
-|------|------|------|
-| `1截底.py` | 训练程序 | 将所有图片底部 24 像素涂白，去除媒体平台水印（控制变量，统一处理） |
-| `2sky云分割.py` | 训练程序 | SegFormer-B1 语义分割，生成三通道 Mask（clouds+fog / sky-other / 地面） |
-| `3ConvNeXtCrossMask2.py` | 训练程序 | ConvNeXt-Tiny + 三通道 MaskEncoder + Spatial Cross-Attention 训练 |
-| `main.py` | 推理模块 | 核心算法，提供 `predict(X)` 接口，比赛跑分系统直接调用 |
-| `predict.py` | 模拟评测 | 本地模拟比赛系统，批量传图给 `main.py` 并统计准确率 |
-
----
-
-## 技术路线
-
-### 训练流水线
-
-```
-原始图片 ──► 1截底.py ──► 2sky云分割.py ──► 3ConvNeXtCrossMask2.py
-                │                │                     │
-         去除底部水印      三通道天空分割           模型训练
-         输出: 1cut/       输出: sky/             输出: .pth 权重
+```text
+weather-classification/
+├── 3ConvNeXtCrossMask2.py      # 🚀 主训练脚本 (进阶版: Focal+CenterLoss, 分层LR)
+├── 3ConvNeXtCrossMask.py       # 基础训练脚本 (单阶段 CE Loss, 用于快速验证)
+├── ConvNeXtCrossMask2推理.py    # 独立推理脚本
+├── README.md                   # 项目说明文档
+├── runs/                       # 训练输出目录 (模型权重、指标曲线)
+│   └── convnext_crossmask2/
+├── 1cut/                       # 数据集根目录 (按类别子文件夹组织)
+│   ├── sunny/
+│   ├── cloudy/
+│   ├── rainy/
+│   └── snowy/
+└── sky/                        # 三通道掩码目录 (与图片同名 _mask.jpg)
+    ├── sunny-sky-segformer-local/
+    ├── cloudy-sky-segformer-local/
+    └── ...
 ```
 
-### 推理流程
+## 🚀 快速开始
 
-```
-比赛系统传入图片
-        │
-   main.predict(X)
-        │
-   ┌────┴────┐
-   │         │
- SegFormer   ConvNeXt-Tiny
- 在线分割     图像特征
-   │         │
- 三通道Mask   RGB特征 (768,7,7)
-   │         │
- MaskEncoder  │
- (3→768)     │
-   │         │
-   └────┬────┘
-   Spatial Cross-Attention
-        │
-   Classifier → sunny / cloudy / rainy / snowy
-```
+### 1. 环境要求
 
-### 三通道 Mask
+- Python >= 3.8
+- PyTorch >= 2.0 (推荐 2.1+)
+- 依赖库: `torchvision`, `albumentations`, `opencv-python`, `numpy`, `matplotlib`, `tqdm`
+- 可选加速: `torch-directml` (Windows AMD/Intel GPU), `cudnn` (NVIDIA GPU)
 
-| 通道 | 含义 | 像素值 |
-|------|------|--------|
-| 0 | Clouds + Fog（云层/雾气） | 200 |
-| 1 | Sky-Other（晴空，需贴顶过滤） | 255 |
-| 2 | Ground / Other（地面/其它） | 128 |
-
----
-
-## 推理接口
-
-`main.py` 提供标准预测接口，比赛系统直接调用：
-
-```python
-import cv2
-from main import predict
-
-# X: np.ndarray, 由 cv2.imread 读取的图片, shape (H, W, 3)
-img = cv2.imread("test.jpg")
-
-# 返回: str, 取值为 'sunny' / 'cloudy' / 'rainy' / 'snowy'
-result = predict(img)
-```
-
----
-
-## 模型架构
-
-**ConvNeXtCrossMask**：RGB 图像经 ConvNeXt-Tiny backbone 提取深层特征，三通道 Mask 经 MaskEncoder 编码到相同维度，两者通过 Spatial Cross-Attention 融合后分类。
-
-**SegFormer-B1**：基于 COCO-Stuff 164K 预训练的 172 类语义分割模型，用于在线提取天空/云层/地面区域。
-
----
-
-## 服务器部署
-
-比赛服务器环境不完整，解决方案：将本地 Python 环境（含 PyTorch、torchvision、albumentations 等依赖）打包后上传，在 `main.py` 中注入本地包路径：
-
-```python
-_LOCAL_PACKAGES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs", "local_packages")
-if os.path.isdir(_LOCAL_PACKAGES) and _LOCAL_PACKAGES not in sys.path:
-    sys.path.insert(0, _LOCAL_PACKAGES)
-```
-
-设备自动检测：CUDA → DirectML → CPU，兼容不同服务器环境。
-
----
-
-## 依赖环境
-
-```
-torch>=2.0.0
-torchvision>=0.15.0
-opencv-python>=4.7.0
-albumentations>=1.3.0
-numpy>=1.24.0
-```
-
----
-
-## 预训练模型
-
-本项目需要以下预训练模型（需提前下载放到指定路径）：
-
-### 1. SegFormer-B1 语义分割模型（训练 + 推理均需要）
-
-| 项目 | 说明 |
-|------|------|
-| 模型 | SegFormer-B1, COCO-Stuff 164K, 172 类语义分割 |
-| 来源 | [ModelScope: damo/cv_segformer-b1](https://www.modelscope.cn/models/damo/cv_segformer-b1_image_semantic-segmentation_coco-stuff164k/summary) |
-| 文件 | `pytorch_model.pt`（约 157 MB） |
-| 放置路径 | `runs/segformer-b1/pytorch_model.pt` |
-
-用途：
-- `2sky云分割.py`（训练时生成三通道 Mask）
-- `main.py`（推理时在线生成三通道 Mask）
-
-下载方式：
 ```bash
-# 方式1: ModelScope SDK
-pip install modelscope
-from modelscope import snapshot_download
-snapshot_download('damo/cv_segformer-b1_image_semantic-segmentation_coco-stuff164k',
-                  cache_dir='runs/segformer-b1')
-
-# 方式2: 手动从 ModelScope 页面下载 pytorch_model.pt
+pip install torch torchvision albumentations opencv-python numpy matplotlib tqdm
 ```
 
-### 2. ConvNeXt-Tiny ImageNet 预训练权重（仅训练时需要）
+### 2. 数据准备
 
-| 项目 | 说明 |
-|------|------|
-| 模型 | ConvNeXt-Tiny, ImageNet-1K 分类 |
-| 来源 | torchvision 内置 (`models.ConvNeXt_Tiny_Weights.DEFAULT`) |
-| 文件 | 首次运行自动下载（约 110 MB），缓存到 `~/.cache/torch/hub/` |
+确保数据集按以下格式组织：
 
-用途：
-- `3ConvNeXtCrossMask2.py` 训练时自动加载 ImageNet 预训练权重
+- **RGB 图片**: `1cut/{class_name}/{image_id}.jpg`
+- **掩码文件**: `sky/{class_name}-sky-segformer-local/{image_id}_mask.jpg`
+  - 掩码必须为灰度图，像素值严格对应: `200`(云/雾), `255`(天空), `128`(地面)
+  - 代码会自动将其转换为三通道 One-Hot 格式
 
-### 3. 训练好的天气分类模型（推理时需要）
+### 3. 训练模型
 
-| 项目 | 说明 |
-|------|------|
-| 文件 | `ConvNeXtCrossMask2_best_*.pth`（约 216 MB） |
-| 放置路径 | `runs/convnext_crossmask2/` |
+```bash
+# 使用进阶版训练脚本 (推荐)
+python 3ConvNeXtCrossMask2.py
 
-该模型由 `3ConvNeXtCrossMask2.py` 训练生成，推理时 `main.py` 自动扫描该目录加载最新权重。若需从零训练，无需提前准备此文件。
+# 或使用基础版快速验证
+python 3ConvNeXtCrossMask.py
+```
 
----
+训练完成后，最佳模型权重与指标曲线将自动保存至 `runs/convnext_crossmask2/`，并自动触发推理脚本。
 
-## 引用
+### 4. 独立推理
 
-- [SegFormer](https://arxiv.org/abs/2105.15203) (NeurIPS 2021)
-- [ConvNeXt](https://arxiv.org/abs/2201.03545) (CVPR 2022)
-- [COCO-Stuff 164K](https://arxiv.org/abs/2104.10900) (CVPR 2022)
+```bash
+python ConvNeXtCrossMask2推理.py --weights runs/convnext_crossmask2/ConvNeXtCrossMask2_best_epXXX.pth --image path/to/test.jpg
+```
+
+## 📊 模型架构详解
+
+```mermaid
+graph TD
+    A[RGB Image 224x224] --> B[ConvNeXt-Tiny Features]
+    C[3-Channel Sky Mask 224x224] --> D[MaskEncoder]
+    B --> E[Spatial Cross-Attention]
+    D --> E
+    E --> F[Adaptive Avg Pooling]
+    F --> G[LayerNorm + Dropout]
+    G --> H[Linear Classifier]
+    H --> I[Weather Logits: Sunny/Cloudy/Rainy/Snowy]
+```
+
+- **Query**: RGB 深层特征 `[B, 768, 7, 7]` → 展平为 `[B, 49, 768]`
+- **Key/Value**: Mask 深层特征 `[B, 768, 7, 7]` → 展平为 `[B, 49, 768]`
+- **Attention**: Multi-Head Self-Attention (8 heads) + FFN + Residual Connection
+- **输出**: 融合后的空间感知特征，保留天气关键区域的响应强度
+
+## ⚠️ 注意事项
+
+1. **掩码质量至关重要**: Cross-Attention 的性能高度依赖掩码的准确性。建议使用 SegFormer 或类似语义分割模型预先生成高质量掩码。
+2. **DirectML 兼容性**: 若在 Windows 上使用 AMD/Intel GPU，代码已内置 `torch_directml` 适配，但部分算子可能回退到 CPU，训练速度较慢。
+3. **Center Loss 调参**: `ALPHA_CENTER=0.01` 为经验值，若类别极度不平衡可适当增大；若训练不稳定可先设为 0 仅用 Focal Loss。
+4. **显存优化**: 默认启用 `channels_last` 内存格式与 AMP 混合精度，若遇到 NaN 可关闭 AMP 调试。
+
+## 📄 License
+
+本项目仅供学习与研究使用。数据集版权归原始作者所有。
+
+## 🙏 Acknowledgments
+
+- [ConvNeXt](https://github.com/facebookresearch/ConvNeXt) - Meta AI
+- [Albumentations](https://albumentations.ai/) - 图像增强库
+- [SegFormer](https://github.com/NVlabs/SegFormer) - 掩码生成参考
+```
