@@ -114,9 +114,3 @@ graph TD
 
 本项目仅供学习与研究使用。数据集版权归原始作者所有。
 
-## 🙏 Acknowledgments
-
-- [ConvNeXt](https://github.com/facebookresearch/ConvNeXt) - Meta AI
-- [Albumentations](https://albumentations.ai/) - 图像增强库
-- [SegFormer](https://github.com/NVlabs/SegFormer) - 掩码生成参考
-```
